@@ -1,53 +1,76 @@
 from app.utils.email_utils import is_free_email
 import re
 
+# Constants
 KNOWN_COMPANIES = ["amazon", "google", "microsoft", "infosys", "tcs"]
+PAYMENT_KEYWORDS = ["pay", "payment", "fee", "deposit", "charges"]
+URGENCY_KEYWORDS = ["urgent", "limited", "immediately"]
+JOB_SCAM_KEYWORDS = ["pay", "fee", "confirm"]
+
+CURRENCY_REGEX = r"(₹|\$|€|rs\.?|inr)\s?\d+"
+
 
 def compute_risk(email_data, domain_data):
     score = 0
     reasons = []
+
     text = email_data.get("raw_text", "").lower()
     domain = email_data.get("domain")
 
-    # HIGH PRIORITY SIGNALS ----------------------
+    # ---------- HIGH PRIORITY SIGNALS ----------
 
-    # Typosquatting (VERY STRONG)
+    # Typosquatting
     typo = email_data.get("typosquatting", {})
     if typo.get("is_suspicious"):
         score += 70
-        reasons.append(f"Typosquatting detected (looks like {typo.get('possible_legit')})")
+        reasons.append(
+            f"Typosquatting detected (looks like {typo.get('possible_legit')})"
+        )
 
-    # Link mismatch (VERY STRONG)
+    # Link mismatch
     if email_data.get("link_mismatches"):
         score += 50
         reasons.append("Links point to different domain than sender")
 
-    # Payment detection (VERY STRONG)
-    if "fee" in text or "payment" in text:
+    # Payment detection
+    if any(word in text for word in PAYMENT_KEYWORDS):
         score += 40
-        reasons.append("Payment request detected")
+        reasons.append("Payment-related language detected")
 
-        if re.search(r"\d{3,}", text):
-            score += 20
-            reasons.append("Monetary amount mentioned")
+    # Monetary detection (independent)
+    if re.search(CURRENCY_REGEX, text):
+        score += 30
+        reasons.append("Monetary amount detected")
 
-    # MEDIUM SIGNALS ----------------------
+    # Job scam pattern
+    if "job" in text and any(word in text for word in JOB_SCAM_KEYWORDS):
+        score += 20
+        reasons.append("Suspicious job-related payment pattern")
+
+    # ---------- MEDIUM PRIORITY SIGNALS ----------
 
     # Free email
     if domain and is_free_email(domain):
         score += 30
         reasons.append("Free email provider used")
 
-    # Company mismatch
+    # Company checks
     for company in KNOWN_COMPANIES:
-        if company in text and domain:
-            if company not in domain:
+        if company in text:
+            if domain is None:
                 score += 30
-                reasons.append(f"Company '{company}' mismatch with domain")
+                reasons.append(
+                    f"Company '{company}' mentioned without official domain"
+                )
+            elif company not in domain:
+                score += 30
+                reasons.append(
+                    f"Company '{company}' mismatch with domain"
+                )
 
-    # LOW SIGNALS ----------------------
+    # ---------- LOW PRIORITY SIGNALS ----------
 
-    if any(word in text for word in ["urgent", "limited", "immediately"]):
+    if any(word in text for word in URGENCY_KEYWORDS):
         score += 10
         reasons.append("Urgency language detected")
 
@@ -56,11 +79,12 @@ def compute_risk(email_data, domain_data):
         score += 15
         reasons.append("New domain")
 
-    if not domain_data.get("has_mx_record"):
+    if domain is not None and domain_data.get("has_mx_record") is False:
         score += 20
         reasons.append("No MX record")
 
-    # Final cap
+    # ---------- FINAL ----------
+
     score = min(score, 100)
 
     return {
